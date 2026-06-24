@@ -2,36 +2,35 @@
 Telegram notifier for Brain Loader v4.
 
 Sends notifications with cost info when tasks complete.
+Uses the Telegram Bot API directly via HTTP (no async event loop issues).
 """
 from __future__ import annotations
 import logging
+
+import requests
 
 logger = logging.getLogger(__name__)
 
 
 class TelegramNotifier:
-    """Simple Telegram notifier using python-telegram-bot."""
+    """Simple Telegram notifier using the Bot API HTTP endpoint."""
 
     def __init__(self, token: str, chat_id: str):
         self.token = token
         self.chat_id = chat_id
+        self._base_url = f"https://api.telegram.org/bot{token}"
 
     def send(self, message: str) -> None:
-        """Send a message to the configured Telegram chat."""
+        """Send a message to the configured Telegram chat (sync, event-loop safe)."""
         try:
-            import telegram
-            from telegram.constants import ParseMode
-
-            async def _send():
-                bot = telegram.Bot(token=self.token)
-                await bot.send_message(
-                    chat_id=self.chat_id,
-                    text=message,
-                    parse_mode=ParseMode.MARKDOWN,
-                )
-
-            import asyncio
-            asyncio.run(_send())
+            url = f"{self._base_url}/sendMessage"
+            payload = {
+                "chat_id": self.chat_id,
+                "text": message,
+                "parse_mode": "Markdown",
+            }
+            response = requests.post(url, json=payload, timeout=30)
+            response.raise_for_status()
             logger.info("[Telegram] Notification sent.")
         except Exception as e:
             logger.warning("[Telegram] Failed to send: %s", e)

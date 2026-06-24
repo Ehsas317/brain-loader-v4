@@ -2,7 +2,7 @@
 from __future__ import annotations
 import logging
 
-import requests
+import aiohttp
 
 from .base import BaseProvider, CallResult
 
@@ -36,15 +36,18 @@ class GeminiProvider(BaseProvider):
             },
         }
 
-        response = requests.post(url, json=payload, timeout=120)
-        response.raise_for_status()
-        data = response.json()
+        timeout = aiohttp.ClientTimeout(total=120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=payload) as response:
+                response.raise_for_status()
+                data = await response.json()
 
         text = data["candidates"][0]["content"]["parts"][0]["text"]
         usage = data.get("usageMetadata", {})
         input_tokens = usage.get("promptTokenCount", 0)
         output_tokens = usage.get("candidatesTokenCount", 0)
 
+        # Gemini pricing (varies by model)
         cost = (input_tokens / 1_000_000) * 1.25 + (output_tokens / 1_000_000) * 10.00
 
         return CallResult(

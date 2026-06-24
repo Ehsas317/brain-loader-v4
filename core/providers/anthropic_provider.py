@@ -39,6 +39,7 @@ class AnthropicProvider(BaseProvider):
 
         text = response.content[0].text
 
+        # Estimate cost (Anthropic pricing varies by model)
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
         cost = self._estimate_cost(model, input_tokens, output_tokens)
@@ -53,10 +54,18 @@ class AnthropicProvider(BaseProvider):
         )
 
     def _estimate_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+        """Rough cost estimation for Anthropic models."""
         pricing = {
             "claude-3-5-sonnet": (3.00, 15.00),
             "claude-3-5-haiku": (0.25, 1.25),
             "claude-3-opus": (15.00, 75.00),
         }
-        input_rate, output_rate = pricing.get(model.split("-")[0] + "-" + model.split("-")[1], (3.00, 15.00))
+        # Default to sonnet pricing if unknown
+        model_key = model
+        if model.startswith("claude-"):
+            parts = model.split("-")
+            # e.g. "claude-3-5-sonnet-20241022" -> "claude-3-5-sonnet"
+            if len(parts) >= 4:
+                model_key = "-".join(parts[:4])
+        input_rate, output_rate = pricing.get(model_key, (3.00, 15.00))
         return (input_tokens / 1_000_000) * input_rate + (output_tokens / 1_000_000) * output_rate
