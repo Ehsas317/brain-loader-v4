@@ -1,0 +1,5 @@
+# Brain Loader v4 — + local backends (Apple Silicon only)
+-r requirements.txt
+mlx>=0.15.0
+mlx-lm>=0.8.0
+huggingface-hub>=0.20.0

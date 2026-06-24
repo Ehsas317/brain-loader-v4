@@ -1,0 +1,123 @@
+# Brain Loader v4 — Configuration
+# ═══════════════════════════════════════════════════════════════════
+# mode: "local"   → 100% local. Zero API cost. Sequential dispatch.
+# mode: "api"     → 100% cloud. Maximum parallelism. Costs money.
+# mode: "hybrid"  → API first, local fallback. Recommended default.
+# ═══════════════════════════════════════════════════════════════════
+mode: "hybrid"
+
+project:
+  name: "brain_loader_v4"
+  outputs_dir: "./outputs"
+  memory_file: "./memory.md"
+  state_file: "./state.json"
+  memory_context_bytes: 3000     # How much of memory.md the brain reads
+  parallel_batch_size: 5         # Max parallel tasks per wave
+
+# ─────────────────────────────────────────────────────────────────
+# Telegram (optional)
+# ─────────────────────────────────────────────────────────────────
+telegram:
+  token: ""
+  chat_id: ""
+
+# ═════════════════════════════════════════════════════════════════
+# API PROVIDER CREDENTIALS
+# Leave api_key as "" to disable that provider entirely.
+# ═════════════════════════════════════════════════════════════════
+providers:
+  anthropic:
+    api_key: ""
+
+  openai:
+    api_key: ""
+
+  openrouter:
+    api_key: ""
+    base_url: "https://openrouter.ai/api/v1"
+
+  groq:
+    api_key: ""
+
+  deepseek:
+    api_key: ""
+    base_url: "https://api.deepseek.com/v1"
+
+  google:
+    api_key: ""
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+
+  ollama:
+    host: "http://localhost:11434"
+
+  mlx:
+    enabled: false
+
+# ═════════════════════════════════════════════════════════════════
+# ROLE → PROVIDER CHAIN ROUTING
+# ═════════════════════════════════════════════════════════════════
+roles:
+  brain:
+    max_tokens: 4096
+    temperature: 0.6
+    chain:
+      - provider: ollama
+        model: "qwen3:32b"
+
+  coder:
+    max_tokens: 8192
+    temperature: 0.2
+    chain:
+      - provider: ollama
+        model: "qwen2.5-coder:32b"
+
+  researcher:
+    max_tokens: 6144
+    temperature: 0.5
+    chain:
+      - provider: ollama
+        model: "qwen3:32b"
+
+  writer:
+    max_tokens: 6144
+    temperature: 0.7
+    chain:
+      - provider: ollama
+        model: "qwen3:32b"
+
+  math:
+    max_tokens: 4096
+    temperature: 0.1
+    chain:
+      - provider: ollama
+        model: "qwen3:32b"
+
+  critic:
+    max_tokens: 4096
+    temperature: 0.4
+    chain:
+      - provider: ollama
+        model: "qwen3:14b"
+
+# ─────────────────────────────────────────────────────────────────
+# COST TRACKING & BUDGET LIMITS
+# ─────────────────────────────────────────────────────────────────
+cost_tracking:
+  enabled: true
+  warn_threshold: 10.00
+  max_cost_per_project: 50.00
+
+# ─────────────────────────────────────────────────────────────────
+# CIRCUIT BREAKER SETTINGS
+# ─────────────────────────────────────────────────────────────────
+circuit_breaker:
+  failure_threshold: 5
+  recovery_timeout: 60
+
+# ─────────────────────────────────────────────────────────────────
+# LOCAL FALLBACK
+# ─────────────────────────────────────────────────────────────────
+local_fallback:
+  enabled: true
+  ollama_host: "http://localhost:11434"
+  fallback_model: "qwen3:32b"
