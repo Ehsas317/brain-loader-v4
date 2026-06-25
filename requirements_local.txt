@@ -1,5 +1,28 @@
-# Brain Loader v4 — + local backends (Apple Silicon only)
--r requirements.txt
-mlx>=0.15.0
-mlx-lm>=0.8.0
-huggingface-hub>=0.20.0
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: requirements_local.txt                                  ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   Python dependencies for Surge local mode (MLX + Ollama).
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Cloud providers
+httpx>=0.27.0
+pyyaml>=6.0.1
+python-telegram-bot>=21.0
+
+# Local MLX
+mlx>=0.23.0
+mlx-lm>=0.21.0
+transformers>=4.40.0
+sentencepiece>=0.2.0
+
+# Local Ollama
+# (Uses httpx already included above)

@@ -1,71 +1,68 @@
-"""
-State Manager — Crash recovery for Brain Loader v4.
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: utils/state_manager.py                                  ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   State Manager — persistent JSON state with resume support for Surge.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
 
-Saves and restores session state so that long-running tasks
-can resume after an unexpected exit.
 """
-from __future__ import annotations
+Surge — State Manager
+
+Persistent JSON state management with resume support.
+"""
+
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Any
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surge.state")
 
 
 class StateManager:
-    """Manages persistent state for crash recovery."""
+    """
+    Surge State Manager
 
-    def __init__(self, state_file: str = "./state.json"):
+    Manages persistent application state in JSON format.
+
+    Usage:
+        state_mgr = StateManager()
+        state_mgr.save_project_state({...})
+        state = state_mgr.load_project_state()
+    """
+
+    def __init__(self, state_file: str = "memory/state.json"):
         self.state_file = Path(state_file)
-        self._state: Dict[str, Any] = {}
-        self._load()
 
-    def _load(self) -> None:
-        """Load state from disk if it exists."""
+    def save_project_state(self, state: Dict[str, Any]):
+        """Save project state to disk."""
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.state_file, 'w') as f:
+            json.dump(state, f, indent=2)
+        logger.debug("[StateManager] State saved")
+
+    def load_project_state(self) -> Dict[str, Any]:
+        """Load project state from disk."""
         if self.state_file.exists():
             try:
-                with open(self.state_file, "r", encoding="utf-8") as f:
-                    self._state = json.load(f)
-                logger.info("[StateManager] Loaded state from %s", self.state_file)
+                with open(self.state_file, 'r') as f:
+                    return json.load(f)
             except (json.JSONDecodeError, IOError) as e:
                 logger.warning("[StateManager] Failed to load state: %s", e)
-                self._state = {}
-        else:
-            self._state = {}
+        return {}
 
-    def save(self) -> None:
-        """Save current state to disk."""
-        try:
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(self._state, f, indent=2)
-            logger.debug("[StateManager] State saved.")
-        except IOError as e:
-            logger.error("[StateManager] Failed to save state: %s", e)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Get a value from state."""
-        return self._state.get(key, default)
-
-    def set(self, key: str, value: Any) -> None:
-        """Set a value in state and persist."""
-        self._state[key] = value
-        self.save()
-
-    def update(self, data: Dict[str, Any]) -> None:
-        """Update multiple values at once."""
-        self._state.update(data)
-        self.save()
-
-    def clear(self) -> None:
-        """Clear all state."""
-        self._state = {}
+    def reset(self):
+        """Reset state for a new project."""
         if self.state_file.exists():
             self.state_file.unlink()
-        logger.info("[StateManager] State cleared.")
-
-    @property
-    def state(self) -> Dict[str, Any]:
-        """Access the full state dictionary."""
-        return self._state.copy()
+        logger.info("[StateManager] State reset")

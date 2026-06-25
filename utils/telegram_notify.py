@@ -1,40 +1,69 @@
-"""
-Telegram notifier for Brain Loader v4.
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: utils/telegram_notify.py                                ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   Telegram Notifier — real-time build progress updates for Surge.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
 
-Sends notifications with cost info when tasks complete.
-Uses the Telegram Bot API directly via HTTP (no async event loop issues).
 """
-from __future__ import annotations
+Surge — Telegram Notifier
+
+Sends real-time build progress updates via Telegram.
+"""
+
 import logging
+import httpx
 
-import requests
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surge.telegram")
 
 
 class TelegramNotifier:
-    """Simple Telegram notifier using the Bot API HTTP endpoint."""
+    """
+    Surge Telegram Notifier
 
-    def __init__(self, token: str, chat_id: str):
-        self.token = token
+    Usage:
+        notifier = TelegramNotifier(bot_token="...", chat_id="...")
+        notifier.send("⚡ Surge starting...")
+    """
+
+    def __init__(self, bot_token: str, chat_id: str):
+        self.bot_token = bot_token
         self.chat_id = chat_id
-        self._base_url = f"https://api.telegram.org/bot{token}"
+        self.base_url = f"https://api.telegram.org/bot{bot_token}"
+        self._enabled = bool(bot_token and chat_id)
 
-    def send(self, message: str) -> None:
-        """Send a message to the configured Telegram chat (sync, event-loop safe)."""
+    def send(self, message: str) -> bool:
+        if not self._enabled:
+            return False
         try:
-            url = f"{self._base_url}/sendMessage"
-            payload = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": "Markdown",
-            }
-            response = requests.post(url, json=payload, timeout=30)
-            response.raise_for_status()
-            logger.info("[Telegram] Notification sent.")
+            payload = {"chat_id": self.chat_id, "text": message, "parse_mode": "Markdown"}
+            resp = httpx.post(f"{self.base_url}/sendMessage", json=payload, timeout=10.0)
+            resp.raise_for_status()
+            return True
         except Exception as e:
-            logger.warning("[Telegram] Failed to send: %s", e)
+            logger.error("Telegram send failed: %s", e)
+            return False
 
-    def send_sync(self, message: str) -> None:
-        """Synchronous wrapper for sending notifications."""
-        self.send(message)
+    def send_file(self, file_path: str, caption: str = "") -> bool:
+        if not self._enabled:
+            return False
+        try:
+            with open(file_path, "rb") as f:
+                files = {"document": f}
+                data = {"chat_id": self.chat_id, "caption": caption}
+                resp = httpx.post(f"{self.base_url}/sendDocument", data=data, files=files, timeout=30.0)
+                resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error("Telegram file send failed: %s", e)
+            return False
