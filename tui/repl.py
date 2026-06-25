@@ -178,8 +178,21 @@ class BrainREPL:
                 tbl.add_row(tid, s["role"], s["status"], s["provider"], s["time"])
             return tbl
 
+        # FIX BUG-V4-004: Wrap dispatch in try/except to handle exceptions
+        # and put an error sentinel in the queue so the REPL doesn't hang.
         async def _run_dispatch():
-            await self.wave_engine.dispatch(tasks, result_queue=result_q)
+            try:
+                await self.wave_engine.dispatch(tasks, result_queue=result_q)
+            except Exception as e:
+                logger.error("[REPL] Wave dispatch failed: %s", e)
+                # Put error result for each incomplete task
+                for t in tasks:
+                    if t.id not in completed_ids:
+                        await result_q.put(RouteResult(
+                            task_id=t.id, role=t.role, text="", provider="none", model="none",
+                            elapsed_s=0, success=False,
+                            error=f"Dispatch failed: {e}",
+                        ))
             await result_q.put(None)  # sentinel
 
         dispatch_task = asyncio.create_task(_run_dispatch())
@@ -217,7 +230,11 @@ class BrainREPL:
 
                 live.update(make_table())
 
-        await dispatch_task
+        # FIX BUG-V4-004: Await the dispatch task to catch any exceptions
+        try:
+            await dispatch_task
+        except Exception as e:
+            logger.error("[REPL] Dispatch task raised: %s", e)
 
         for r in all_results:
             if r.success:
@@ -245,11 +262,17 @@ class BrainREPL:
             return await self.wave_engine.synthesize(goal, results, notes)
 
     def _append_memory(self, goal: str, synthesis: str) -> None:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        summary_line = synthesis[:200].replace("\n", " ")
-        entry = f"\n### [{timestamp}] Goal: {goal[:80]}\n{summary_line}…\n"
-        with open(self.memory_file, "a", encoding="utf-8") as f:
-            f.write(entry)
+        # FIX BUG-V4-006: Ensure parent directory exists before appending
+        # (handles case where outputs_dir is deleted mid-run)
+        try:
+            self.memory_file.parent.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            summary_line = synthesis[:200].replace("\n", " ")
+            entry = f"\n### [{timestamp}] Goal: {goal[:80]}\n{summary_line}…\n"
+            with open(self.memory_file, "a", encoding="utf-8") as f:
+                f.write(entry)
+        except Exception as e:
+            logger.warning("[REPL] Failed to append memory: %s", e)
 
     def _notify(self, message: str) -> None:
         tg = self.config.get("telegram", {})
