@@ -1,176 +1,164 @@
-"""Wave Engine — Brain planning, parallel task dispatch, synthesis."""
-from __future__ import annotations
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: core/wave_engine.py                                     ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   Wave Engine — the core of Surge. Dispatches tasks in parallel waves
+#   across multiple LLM backends for maximum throughput.
+#
+# HOW TO USE SURGE:
+#   1. Install:    pip install -r requirements.txt
+#   2. Configure:  Edit config.yaml with your API tokens
+#   3. Run:        python main.py "Your project description"
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
+"""
+Surge — Wave Engine
+
+Parallel task dispatch across multiple LLM backends.
+"""
 
 import asyncio
-import json
 import logging
-import re
-from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .router import UniversalRouter, RouteResult
+from core.router import ModelRouter
+from core.cost_tracker import CostTracker
 
-logger = logging.getLogger(__name__)
-
-_PLAN_SYSTEM = """\
-You are the Brain — the strategic planner in the Brain Loader v4 system.
-
-Your job: decompose the user's goal into a wave of parallel specialist tasks.
-
-OUTPUT FORMAT: Valid JSON only. No prose. No markdown code fences. Exactly this schema:
-
-{
-  "goal_understood": "one-sentence restatement of the goal",
-  "tasks": [
-    {
-      "id": "T1",
-      "role": "researcher",
-      "prompt": "detailed prompt for the specialist — be specific",
-      "parallel_safe": true
-    }
-  ],
-  "synthesis_notes": "how to combine task outputs into a final answer",
-  "wave_count_estimate": 1
-}
-
-Rules:
-- parallel_safe: true  → task can run alongside other tasks
-- parallel_safe: false → task needs results from parallel tasks first (runs after them)
-- Aim for 2–5 tasks per wave. More tasks = more parallelism = faster results.
-- Available roles: researcher, coder, writer, math, critic
-- One role per task. Prompts must be self-contained and detailed.
-"""
-
-_SYNTHESIS_SYSTEM = """\
-You are the Brain synthesizing your specialist team's outputs into a final answer.
-
-Write a complete, well-structured markdown response that:
-1. Directly answers the original goal
-2. Incorporates all relevant findings from each specialist
-3. Notes any conflicting information or failed tasks
-4. Is thorough — this is the deliverable the user will read
-
-Do not add meta-commentary about the process. Just write the answer.
-"""
-
-
-@dataclass
-class Task:
-    id: str
-    role: str
-    prompt: str
-    parallel_safe: bool = True
+logger = logging.getLogger("surge.wave")
 
 
 class WaveEngine:
-    def __init__(self, router: UniversalRouter, config: dict):
+    """
+    Surge Wave Engine
+
+    Dispatches tasks in parallel waves across multiple LLM backends.
+    Each wave sends tasks to all available providers simultaneously,
+    returning the best results.
+
+    Usage:
+        engine = WaveEngine(router=router, config=config)
+        engine.run("Build a fitness app")
+    """
+
+    def __init__(self, router: ModelRouter, config: Dict[str, Any]):
         self.router = router
         self.config = config
-
-    async def plan(
-        self, goal: str, memory_context: str = ""
-    ) -> tuple[str, List[Task], str]:
-        ctx = f"\n\n## Session Context (recent history)\n{memory_context}" if memory_context else ""
-        prompt = f"Plan the following goal:{ctx}\n\n## Goal\n{goal}"
-
-        result = await self.router.execute(
-            role="brain", task_id="brain_plan", prompt=prompt, system=_PLAN_SYSTEM
+        self.wave_config = config.get("wave", {})
+        self.max_concurrent = self.wave_config.get("max_concurrent", 4)
+        self.timeout = self.wave_config.get("timeout_seconds", 120)
+        self.cost_tracker = CostTracker(
+            budget_limit=config.get("cost_tracking", {}).get("budget_limit", 10.0)
         )
 
-        if not result.success:
-            raise RuntimeError(f"Brain planning failed: {result.error}")
+    def run(self, app_idea: str):
+        """Main entry point — dispatch waves of tasks."""
+        logger.info("[WaveEngine] Starting Surge: %s", app_idea)
 
-        text = result.text.strip()
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-        text = text.strip()
+        # Phase 1: Planning wave
+        plan = self._planning_wave(app_idea)
+        tasks = self._decompose_plan(plan)
 
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
-            m = re.search(r"\{.*\}", text, re.DOTALL)
-            if not m:
-                raise RuntimeError(f"Brain did not return valid JSON:\n{text[:600]}")
-            data = json.loads(m.group())
+        # Phase 2: Execution waves
+        results = self._execution_waves(tasks)
 
-        tasks = [
-            Task(
-                id=t["id"],
-                role=t.get("role", "researcher"),
-                prompt=t["prompt"],
-                parallel_safe=t.get("parallel_safe", True),
-            )
-            for t in data.get("tasks", [])
-        ]
+        # Phase 3: Integration
+        self._integrate_results(results)
 
-        return (
-            data.get("goal_understood", goal),
-            tasks,
-            data.get("synthesis_notes", ""),
-        )
+        logger.info("[WaveEngine] Surge complete!")
 
-    async def dispatch(
-        self,
-        tasks: List[Task],
-        result_queue: Optional[asyncio.Queue] = None,
-    ) -> List[RouteResult]:
-        parallel = [t for t in tasks if t.parallel_safe]
-        sequential = [t for t in tasks if not t.parallel_safe]
+    def _planning_wave(self, app_idea: str) -> str:
+        """Send planning request to all providers simultaneously."""
+        logger.info("[WaveEngine] Planning wave...")
 
-        all_results: List[RouteResult] = []
+        prompt = f"Create a development plan for: {app_idea}"
+        responses = self._dispatch_wave([{"type": "planning", "prompt": prompt}])
 
-        if parallel:
-            logger.info("[Wave] Dispatching %d parallel task(s)", len(parallel))
-            coros = [
-                self.router.execute(role=t.role, task_id=t.id, prompt=t.prompt)
-                for t in parallel
-            ]
-            for coro in asyncio.as_completed(coros):
-                r = await coro
-                all_results.append(r)
-                if result_queue:
-                    await result_queue.put(r)
+        # Use the longest/most detailed plan
+        best = max(responses, key=lambda r: len(r.get("content", "")))
+        return best.get("content", "")
 
-        for task in sequential:
-            context_block = "\n\n".join(
-                f"### {r.task_id} [{r.role}]\n{r.text[:2500]}"
-                for r in all_results if r.success
-            )
-            aug_prompt = task.prompt
-            if context_block:
-                aug_prompt += f"\n\n## Results from parallel tasks\n{context_block}"
+    def _decompose_plan(self, plan: str) -> List[Dict]:
+        """Break plan into parallelizable tasks."""
+        import re
+        tasks = []
+        for match in re.finditer(r'Task\s+(\w+):\s*\((\w+)\)\s*(.+?)(?=Task|$)', plan, re.DOTALL):
+            tid, ttype, desc = match.groups()
+            tasks.append({"id": tid.strip(), "type": ttype.strip(), "description": desc.strip()})
+        return tasks
 
-            r = await self.router.execute(role=task.role, task_id=task.id, prompt=aug_prompt)
-            all_results.append(r)
-            if result_queue:
-                await result_queue.put(r)
+    def _execution_waves(self, tasks: List[Dict]) -> List[Dict]:
+        """Execute tasks in parallel waves."""
+        logger.info("[WaveEngine] Executing %d tasks in waves...", len(tasks))
+        results = []
 
-        return all_results
+        with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
+            futures = {}
+            for task in tasks:
+                prompt = self._build_prompt(task)
+                future = executor.submit(self._dispatch_task, task, prompt)
+                futures[future] = task
 
-    async def synthesize(
-        self,
-        goal: str,
-        results: List[RouteResult],
-        synthesis_notes: str = "",
-    ) -> str:
-        sections = []
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    result = future.result(timeout=self.timeout)
+                    results.append({"task": task, "result": result})
+                    logger.info("[WaveEngine] Task %s complete", task.get("id"))
+                except Exception as e:
+                    logger.error("[WaveEngine] Task %s failed: %s", task.get("id"), e)
+                    results.append({"task": task, "error": str(e)})
+
+        return results
+
+    def _dispatch_task(self, task: Dict, prompt: str) -> str:
+        """Dispatch a single task to the best available provider."""
+        provider_name = self.router.route(task["type"])
+        if not provider_name and self.router.providers:
+            provider_name = list(self.router.providers.keys())[0]
+        return self.router.generate(provider_name, prompt)
+
+    def _dispatch_wave(self, items: List[Dict]) -> List[Dict]:
+        """Dispatch multiple items to all providers in parallel."""
+        results = []
+        with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
+            futures = {}
+            for item in items:
+                for provider_name in self.router.providers:
+                    future = executor.submit(
+                        self.router.generate, provider_name, item["prompt"]
+                    )
+                    futures[future] = provider_name
+
+            for future in as_completed(futures):
+                try:
+                    content = future.result(timeout=self.timeout)
+                    results.append({"provider": futures[future], "content": content})
+                except Exception as e:
+                    logger.warning("Wave dispatch failed: %s", e)
+
+        return results
+
+    def _build_prompt(self, task: Dict) -> str:
+        """Build a prompt for a task."""
+        return f"Task: {task.get('description', '')}\n\nProvide complete implementation:"
+
+    def _integrate_results(self, results: List[Dict]):
+        """Integrate all task results into final output."""
+        logger.info("[WaveEngine] Integrating %d results", len(results))
         for r in results:
-            status = "✓ Complete" if r.success else "✗ FAILED"
-            body = r.text if r.success else f"Error: {r.error}"
-            sections.append(
-                f"### Task {r.task_id} [{r.role}] — {status}\n"
-                f"_Provider: {r.provider} / {r.model.split('/')[-1]}_\n\n{body}"
-            )
-
-        prompt = (
-            f"## Original Goal\n{goal}\n\n"
-            f"## Synthesis Notes\n{synthesis_notes or 'Combine all outputs coherently.'}\n\n"
-            f"## Specialist Outputs\n\n"
-            + "\n\n---\n\n".join(sections)
-        )
-
-        result = await self.router.execute(
-            role="brain", task_id="synthesis", prompt=prompt, system=_SYNTHESIS_SYSTEM
-        )
-
-        return result.text if result.success else "Synthesis failed — check logs."
+            task_id = r["task"].get("id", "unknown")
+            if "result" in r:
+                logger.info("  %s: OK (%d chars)", task_id, len(r["result"]))
+            else:
+                logger.warning("  %s: FAILED", task_id)

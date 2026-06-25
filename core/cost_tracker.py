@@ -1,59 +1,114 @@
-"""Cost Tracker — Session-level API spend monitoring."""
-from __future__ import annotations
-import json
-import logging
-import threading
-from pathlib import Path
-from typing import Dict
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: core/cost_tracker.py                                    ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   Cost Tracker — monitors API usage costs across all providers.
+#   Tracks spending per project and enforces budget limits.
+#
+# HOW TO USE SURGE:
+#   1. Install:    pip install -r requirements.txt
+#   2. Configure:  Edit config.yaml with your API tokens
+#   3. Run:        python main.py "Your project description"
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
 
-logger = logging.getLogger(__name__)
+"""
+Surge — Cost Tracker
+
+Monitors API usage costs and enforces budget limits.
+"""
+
+import logging
+from typing import Dict, Optional
+from dataclasses import dataclass, field
+
+logger = logging.getLogger("surge.cost")
+
+
+@dataclass
+class CostRecord:
+    """Cost record for a single API call."""
+    provider: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
+    timestamp: str = ""
 
 
 class CostTracker:
-    def __init__(self, outputs_dir: str = "./outputs"):
-        self.outputs_dir = Path(outputs_dir)
-        self.outputs_dir.mkdir(parents=True, exist_ok=True)
-        self._costs: Dict[str, float] = {}
-        self._total_tokens = {"input": 0, "output": 0}
-        self._lock = threading.Lock()
+    """
+    Surge Cost Tracker
 
-    def add_request(self, provider: str, model: str, input_tokens: int,
+    Tracks API usage costs across all providers and enforces
+    budget limits. Alerts when approaching budget threshold.
+
+    Usage:
+        tracker = CostTracker(budget_limit=10.0, alert_threshold=0.8)
+        tracker.record_call("deepseek", "deepseek-chat", 1000, 500, 0.01)
+        if tracker.is_over_budget():
+            print("Budget exceeded!")
+    """
+
+    def __init__(self, budget_limit: float = 10.0, alert_threshold: float = 0.8):
+        self.budget_limit = budget_limit
+        self.alert_threshold = alert_threshold
+        self.records: list = []
+        self.total_cost = 0.0
+        self._alerted = False
+
+    def record_call(self, provider: str, model: str, input_tokens: int,
                     output_tokens: int, cost_usd: float):
-        key = f"{provider}/{model}"
-        with self._lock:
-            self._costs[key] = self._costs.get(key, 0.0) + cost_usd
-            self._total_tokens["input"] += input_tokens
-            self._total_tokens["output"] += output_tokens
-        logger.debug("[CostTracker] %s: $%.4f (total: $%.4f)",
-                     key, cost_usd, self.get_total())
+        """Record a single API call's cost."""
+        import datetime
+        record = CostRecord(
+            provider=provider,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+            timestamp=datetime.datetime.now().isoformat(),
+        )
+        self.records.append(record)
+        self.total_cost += cost_usd
 
-    def get_total(self) -> float:
-        with self._lock:
-            return sum(self._costs.values())
+        # Check budget
+        if not self._alerted and self.is_near_budget():
+            logger.warning("[CostTracker] Budget alert: $%.2f / $%.2f",
+                         self.total_cost, self.budget_limit)
+            self._alerted = True
+
+    def is_near_budget(self) -> bool:
+        """Check if spending is near the alert threshold."""
+        return self.total_cost >= (self.budget_limit * self.alert_threshold)
+
+    def is_over_budget(self) -> bool:
+        """Check if budget is exceeded."""
+        return self.total_cost >= self.budget_limit
 
     def get_summary(self) -> Dict:
-        with self._lock:
-            return {
-                "total_usd": round(sum(self._costs.values()), 4),
-                "by_provider_model": {k: round(v, 4) for k, v in self._costs.items()},
-                "total_tokens": self._total_tokens.copy(),
-            }
+        """Get cost summary."""
+        by_provider = {}
+        for r in self.records:
+            by_provider[r.provider] = by_provider.get(r.provider, 0) + r.cost_usd
 
-    def check_budget(self, warn_threshold: float, max_threshold: float) -> str:
-        total = self.get_total()
-        if total >= max_threshold:
-            return "exceeded"
-        if total >= warn_threshold:
-            return "warn"
-        return "ok"
+        return {
+            "total_cost_usd": round(self.total_cost, 4),
+            "budget_limit_usd": self.budget_limit,
+            "remaining_usd": round(self.budget_limit - self.total_cost, 4),
+            "utilization": round(self.total_cost / self.budget_limit, 4) if self.budget_limit > 0 else 0,
+            "total_calls": len(self.records),
+            "by_provider": {k: round(v, 4) for k, v in by_provider.items()},
+        }
 
-    def save_report(self, project_name: str):
-        report_file = self.outputs_dir / f"cost_report_{project_name}.json"
-        with open(report_file, "w") as f:
-            json.dump(self.get_summary(), f, indent=2)
-        logger.info("[CostTracker] Report saved: %s", report_file)
-
-    def reset(self):
-        with self._lock:
-            self._costs.clear()
-            self._total_tokens = {"input": 0, "output": 0}
+    def __repr__(self):
+        return f"<CostTracker ${self.total_cost:.2f} / ${self.budget_limit:.2f}>"

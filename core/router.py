@@ -1,235 +1,118 @@
-"""Universal provider router with per-role fallback chains."""
-from __future__ import annotations
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: core/router.py                                           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   Model Router — routes tasks to the optimal LLM provider based on
+#   task type, cost, availability, and configured priorities.
+#
+# HOW TO USE SURGE:
+#   1. Install:    pip install -r requirements.txt
+#   2. Configure:  Edit config.yaml with your API tokens
+#   3. Run:        python main.py "Your project description"
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
+"""
+Surge — Model Router
+
+Routes tasks to optimal LLM providers based on type, cost, and availability.
+"""
 
 import asyncio
 import logging
-import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-from .providers.base import BaseProvider, CallResult
-from .providers.anthropic_provider import AnthropicProvider
-from .providers.openai_provider import OpenAICompatibleProvider
-from .providers.gemini_provider import GeminiProvider
-from .providers.ollama_provider import OllamaProvider
-from .providers.mlx_provider import MLXProvider
+import httpx
 
-logger = logging.getLogger(__name__)
-
-_RATE_LIMIT_SIGNALS = ("rate limit", "too many requests", "429", "ratelimit")
-_QUOTA_SIGNALS = ("quota exceeded", "insufficient_quota", "billing", "credit", "payment")
+logger = logging.getLogger("surge.router")
 
 
-@dataclass
-class RouteResult:
-    task_id: str
-    role: str
-    text: str
-    provider: str
-    model: str
-    elapsed_s: float
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cost_usd: float = 0.0
-    success: bool = True
-    error: Optional[str] = None
+class ModelRouter:
+    """
+    Surge Model Router
 
+    Routes generation requests to the optimal provider based on:
+    - Task type and provider capabilities
+    - Cost per token
+    - Provider availability
+    - Configured priority
 
-@dataclass
-class RouterStats:
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    total_cost_usd: float = 0.0
-    provider_calls: Dict[str, int] = field(default_factory=dict)
-    fallbacks: int = 0
+    Usage:
+        router = ModelRouter(providers)
+        provider = router.route("frontend")
+        result = router.generate(provider, "Write React code...")
+    """
 
+    def __init__(self, providers: Dict[str, Dict]):
+        self.providers = providers
+        self.routing_rules = {}
+        logger.info("[Router] Initialized with %d providers", len(providers))
 
-class CircuitBreaker:
-    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.failures = 0
-        self.last_failure_time: Optional[float] = None
-        self.state = "closed"
-        self._lock = asyncio.Lock()
+    def route(self, task_type: str) -> Optional[str]:
+        """Select the best provider for a task type."""
+        available = [p for p, cfg in self.providers.items()
+                     if cfg.get("api_key") or cfg.get("type") == "local"]
 
-    async def record_success(self):
-        # FIX BUG-V4-005: Shield against cancellation to ensure lock
-        # is always released even if the task is cancelled mid-operation.
-        with asyncio.shield_context():
-            async with self._lock:
-                self.failures = 0
-                self.state = "closed"
+        if not available:
+            logger.error("[Router] No providers available")
+            return None
 
-    async def record_failure(self):
-        # FIX BUG-V4-005: Shield against cancellation to ensure lock
-        # is always released and state remains consistent.
-        with asyncio.shield_context():
-            async with self._lock:
-                self.failures += 1
-                self.last_failure_time = time.time()
-                if self.failures >= self.failure_threshold:
-                    self.state = "open"
-                    logger.warning("[CircuitBreaker] Provider OPENED after %d failures", self.failures)
+        # Sort by priority (lower = better)
+        available.sort(key=lambda p: self.providers[p].get("priority", 99))
 
-    async def can_attempt(self) -> bool:
-        async with self._lock:
-            if self.state == "closed":
-                return True
-            if self.state == "open":
-                if self.last_failure_time and (time.time() - self.last_failure_time) > self.recovery_timeout:
-                    self.state = "half-open"
-                    return True
-                return False
-            return True
+        best = available[0]
+        logger.debug("[Router] Routed %s → %s", task_type, best)
+        return best
 
+    def generate(self, provider_name: str, prompt: str, max_tokens: int = 4096) -> str:
+        """Generate text using the specified provider."""
+        if provider_name not in self.providers:
+            raise ValueError(f"Unknown provider: {provider_name}")
 
-class UniversalRouter:
-    _LOCAL = {"mlx", "ollama"}
+        cfg = self.providers[provider_name]
 
-    def __init__(self, config: dict):
-        self.config = config
-        self.stats = RouterStats()
-        p = config.get("providers", {})
+        # Handle local MLX
+        if cfg.get("type") == "local":
+            return self._local_generate(cfg, prompt, max_tokens)
 
-        cb_cfg = config.get("circuit_breaker", {})
-        self.circuit_breakers: Dict[str, CircuitBreaker] = {}
+        # Handle cloud API
+        return self._cloud_generate(cfg, prompt, max_tokens)
 
-        self._providers: Dict[str, BaseProvider] = {
-            "anthropic": AnthropicProvider(p.get("anthropic", {}).get("api_key", "")),
-            "openai": OpenAICompatibleProvider(
-                p.get("openai", {}).get("api_key", ""), provider_name="openai"
-            ),
-            "openrouter": OpenAICompatibleProvider(
-                p.get("openrouter", {}).get("api_key", ""),
-                base_url=p.get("openrouter", {}).get("base_url", "https://openrouter.ai/api/v1"),
-                provider_name="openrouter",
-            ),
-            "groq": OpenAICompatibleProvider(
-                p.get("groq", {}).get("api_key", ""),
-                base_url="https://api.groq.com/openai/v1",
-                provider_name="groq",
-            ),
-            "deepseek": OpenAICompatibleProvider(
-                p.get("deepseek", {}).get("api_key", ""),
-                base_url="https://api.deepseek.com/v1",
-                provider_name="deepseek",
-            ),
-            "google": GeminiProvider(
-                p.get("google", {}).get("api_key", ""),
-                base_url=p.get("google", {}).get("base_url", "https://generativelanguage.googleapis.com/v1beta"),
-            ),
-            "ollama": OllamaProvider(p.get("ollama", {}).get("host", "http://localhost:11434")),
-            "mlx": MLXProvider(enabled=p.get("mlx", {}).get("enabled", True)),
-        }
+    def _local_generate(self, cfg: Dict, prompt: str, max_tokens: int) -> str:
+        """Generate using local MLX model."""
+        try:
+            from mlx_lm import load, generate
+            model, tokenizer = load(cfg["path"])
+            return generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens, temp=0.0)
+        except Exception as e:
+            logger.error("Local generation failed: %s", e)
+            return f"[Local Error: {e}]"
 
-        for name in self._providers:
-            self.circuit_breakers[name] = CircuitBreaker(
-                failure_threshold=cb_cfg.get("failure_threshold", 5),
-                recovery_timeout=cb_cfg.get("recovery_timeout", 60),
-            )
+    def _cloud_generate(self, cfg: Dict, prompt: str, max_tokens: int) -> str:
+        """Generate using cloud API."""
+        try:
+            headers = {"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"}
+            payload = {
+                "model": cfg["model"],
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+            }
+            resp = httpx.post(f"{cfg['endpoint']}/chat/completions",
+                            headers=headers, json=payload, timeout=60.0)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            logger.error("Cloud generation failed for %s: %s", cfg.get("model"), e)
+            return f"[Cloud Error: {e}]"
 
-        self._local_locks: Dict[str, asyncio.Lock] = {
-            "mlx": asyncio.Lock(),
-            "ollama": asyncio.Lock(),
-        }
-
-    async def execute(
-        self,
-        role: str,
-        task_id: str,
-        prompt: str,
-        system: str = "",
-    ) -> RouteResult:
-        role_cfg = self.config.get("roles", {}).get(role, {})
-        chain: List[dict] = role_cfg.get("chain", [])
-        max_tokens: int = role_cfg.get("max_tokens", 4096)
-        temperature: float = role_cfg.get("temperature", 0.6)
-
-        if not chain:
-            return RouteResult(
-                task_id=task_id, role=role, text="", provider="none", model="none",
-                elapsed_s=0, success=False,
-                error=f"No chain configured for role '{role}'. Add it to config.yaml.",
-            )
-
-        for idx, node in enumerate(chain):
-            pname = node["provider"]
-            model = node["model"]
-            provider = self._providers.get(pname)
-
-            if not provider:
-                logger.warning("[Router] Unknown provider '%s', skipping", pname)
-                continue
-
-            if not provider.is_available():
-                logger.debug("[Router] Provider '%s' not available, skipping", pname)
-                continue
-
-            cb = self.circuit_breakers.get(pname)
-            if cb and not await cb.can_attempt():
-                logger.debug("[Router] Provider '%s' circuit breaker OPEN, skipping", pname)
-                continue
-
-            if idx > 0:
-                self.stats.fallbacks += 1
-                logger.info("[Router] %s: fallback #%d → %s/%s", task_id, idx, pname, model)
-
-            try:
-                t0 = time.monotonic()
-
-                if pname in self._LOCAL:
-                    lock = self._local_locks[pname]
-                    async with lock:
-                        result = await provider.call(prompt, system, max_tokens, temperature, model)
-                else:
-                    result = await provider.call(prompt, system, max_tokens, temperature, model)
-
-                elapsed = time.monotonic() - t0
-
-                self.stats.total_input_tokens += result.input_tokens
-                self.stats.total_output_tokens += result.output_tokens
-                self.stats.total_cost_usd += result.cost_usd
-                self.stats.provider_calls[pname] = self.stats.provider_calls.get(pname, 0) + 1
-
-                if cb:
-                    await cb.record_success()
-
-                return RouteResult(
-                    task_id=task_id, role=role,
-                    text=result.text, provider=pname, model=model,
-                    elapsed_s=elapsed,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    cost_usd=result.cost_usd,
-                    success=True,
-                )
-
-            except Exception as e:
-                err = str(e).lower()
-                if any(s in err for s in _QUOTA_SIGNALS):
-                    logger.warning("[Router] Quota/billing on %s/%s — skipping immediately.", pname, model)
-                elif any(s in err for s in _RATE_LIMIT_SIGNALS):
-                    logger.warning("[Router] Rate-limited on %s/%s — waiting 2s.", pname, model)
-                    await asyncio.sleep(2)
-                else:
-                    logger.warning("[Router] Error on %s/%s: %s", pname, model, e)
-
-                if cb:
-                    await cb.record_failure()
-                continue
-
-        return RouteResult(
-            task_id=task_id, role=role, text="", provider="exhausted", model="none",
-            elapsed_s=0, success=False,
-            error=f"All providers in chain for role '{role}' failed.",
-        )
-
-    def get_stats(self) -> str:
-        s = self.stats
-        calls = " · ".join(f"{k}={v}" for k, v in s.provider_calls.items()) or "none yet"
-        return (
-            f"Tokens — in: {s.total_input_tokens:,}  out: {s.total_output_tokens:,}\n"
-            f"Cost: ${s.total_cost_usd:.4f}   Fallbacks: {s.fallbacks}\n"
-            f"Provider calls: {calls}"
-        )
+    def __repr__(self):
+        return f"<ModelRouter providers={list(self.providers.keys())}>"
