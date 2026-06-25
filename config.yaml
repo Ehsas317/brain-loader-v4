@@ -1,123 +1,89 @@
-# Brain Loader v4 — Configuration
-# ═══════════════════════════════════════════════════════════════════
-# mode: "local"   → 100% local. Zero API cost. Sequential dispatch.
-# mode: "api"     → 100% cloud. Maximum parallelism. Costs money.
-# mode: "hybrid"  → API first, local fallback. Recommended default.
-# ═══════════════════════════════════════════════════════════════════
-mode: "hybrid"
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: config.yaml                                              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   Configuration for the Surge parallel dispatch orchestrator.
+#   Defines provider APIs, routing rules, and wave parameters.
+#
+# HOW TO USE SURGE:
+#   1. Install:    pip install -r requirements.txt
+#   2. Configure:  Copy to config.yaml, add your API tokens
+#   3. Run:        python main.py "Your project description"
+#
+# ═══════════════════════════════════════════════════════════════════════════
 
-project:
-  name: "brain_loader_v4"
-  outputs_dir: "./outputs"
-  memory_file: "./memory.md"
-  state_file: "./state.json"
-  memory_context_bytes: 3000     # How much of memory.md the brain reads
-  parallel_batch_size: 5         # Max parallel tasks per wave
+# ============================================================
+# SURGE CONFIGURATION
+# ============================================================
+# Hardware: MacBook Pro M1 Max 32GB (25GB allocated)
+# Parallel dispatch across multiple LLM backends
+# ============================================================
 
-# ─────────────────────────────────────────────────────────────────
-# Telegram (optional)
-# ─────────────────────────────────────────────────────────────────
-telegram:
-  token: ""
-  chat_id: ""
+app_name: "surge"
 
-# ═════════════════════════════════════════════════════════════════
-# API PROVIDER CREDENTIALS
-# Leave api_key as "" to disable that provider entirely.
-# ═════════════════════════════════════════════════════════════════
+# Wave configuration
+wave:
+  max_concurrent: 4  # Max parallel tasks
+  timeout_seconds: 120  # Per-wave timeout
+  retry_attempts: 2
+
+# Provider configurations
 providers:
-  anthropic:
-    api_key: ""
-
-  openai:
-    api_key: ""
-
-  openrouter:
-    api_key: ""
-    base_url: "https://openrouter.ai/api/v1"
-
-  groq:
-    api_key: ""
-
   deepseek:
-    api_key: ""
-    base_url: "https://api.deepseek.com/v1"
+    api_key: "YOUR_DEEPSEEK_KEY"
+    model: "deepseek-chat"
+    endpoint: "https://api.deepseek.com/v1"
+    priority: 1  # Lower = preferred
+    cost_per_1k: 0.50
 
-  google:
-    api_key: ""
-    base_url: "https://generativelanguage.googleapis.com/v1beta"
+  mistral:
+    api_key: "YOUR_MISTRAL_KEY"
+    model: "mistral-small"
+    endpoint: "https://api.mistral.ai/v1"
+    priority: 2
+    cost_per_1k: 2.00
 
-  ollama:
-    host: "http://localhost:11434"
+  anthropic:
+    api_key: "YOUR_ANTHROPIC_KEY"
+    model: "claude-sonnet-4-20250514"
+    endpoint: "https://api.anthropic.com/v1"
+    priority: 3
+    cost_per_1k: 3.00
 
-  mlx:
-    enabled: false
+  together:
+    api_key: "YOUR_TOGETHER_KEY"
+    model: "meta-llama/Llama-4-Maverick-17B"
+    endpoint: "https://api.together.ai/v1"
+    priority: 4
+    cost_per_1k: 0.80
 
-# ═════════════════════════════════════════════════════════════════
-# ROLE → PROVIDER CHAIN ROUTING
-# ═════════════════════════════════════════════════════════════════
-roles:
-  brain:
-    max_tokens: 4096
-    temperature: 0.6
-    chain:
-      - provider: ollama
-        model: "qwen3:32b"
+  local_mlx:
+    type: "local"
+    path: "./models/surge-q4.gguf"
+    priority: 0  # Always try local first
+    cost_per_1k: 0.0
 
-  coder:
-    max_tokens: 8192
-    temperature: 0.2
-    chain:
-      - provider: ollama
-        model: "qwen2.5-coder:32b"
+# Routing rules
+routing:
+  default_provider: "deepseek"
+  fallback_order: ["local_mlx", "deepseek", "mistral", "together", "anthropic"]
+  cost_aware: true  # Route to cheapest available
 
-  researcher:
-    max_tokens: 6144
-    temperature: 0.5
-    chain:
-      - provider: ollama
-        model: "qwen3:32b"
+# Telegram notifications
+telegram:
+  enabled: true
+  bot_token: "YOUR_BOT_TOKEN"
+  chat_id: "YOUR_CHAT_ID"
 
-  writer:
-    max_tokens: 6144
-    temperature: 0.7
-    chain:
-      - provider: ollama
-        model: "qwen3:32b"
-
-  math:
-    max_tokens: 4096
-    temperature: 0.1
-    chain:
-      - provider: ollama
-        model: "qwen3:32b"
-
-  critic:
-    max_tokens: 4096
-    temperature: 0.4
-    chain:
-      - provider: ollama
-        model: "qwen3:14b"
-
-# ─────────────────────────────────────────────────────────────────
-# COST TRACKING & BUDGET LIMITS
-# ─────────────────────────────────────────────────────────────────
+# Cost tracking
 cost_tracking:
   enabled: true
-  warn_threshold: 10.00
-  max_cost_per_project: 50.00
-
-# ─────────────────────────────────────────────────────────────────
-# CIRCUIT BREAKER SETTINGS
-# ─────────────────────────────────────────────────────────────────
-circuit_breaker:
-  failure_threshold: 5
-  recovery_timeout: 60
-
-# ─────────────────────────────────────────────────────────────────
-# LOCAL FALLBACK
-# ─────────────────────────────────────────────────────────────────
-local_fallback:
-  enabled: true
-  ollama_host: "http://localhost:11434"
-  fallback_model: "qwen3:32b"
+  budget_limit: 10.0  # USD per project
+  alert_threshold: 0.8  # Alert at 80% of budget
