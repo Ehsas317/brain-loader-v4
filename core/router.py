@@ -54,17 +54,23 @@ class CircuitBreaker:
         self._lock = asyncio.Lock()
 
     async def record_success(self):
-        async with self._lock:
-            self.failures = 0
-            self.state = "closed"
+        # FIX BUG-V4-005: Shield against cancellation to ensure lock
+        # is always released even if the task is cancelled mid-operation.
+        with asyncio.shield_context():
+            async with self._lock:
+                self.failures = 0
+                self.state = "closed"
 
     async def record_failure(self):
-        async with self._lock:
-            self.failures += 1
-            self.last_failure_time = time.time()
-            if self.failures >= self.failure_threshold:
-                self.state = "open"
-                logger.warning("[CircuitBreaker] Provider OPENED after %d failures", self.failures)
+        # FIX BUG-V4-005: Shield against cancellation to ensure lock
+        # is always released and state remains consistent.
+        with asyncio.shield_context():
+            async with self._lock:
+                self.failures += 1
+                self.last_failure_time = time.time()
+                if self.failures >= self.failure_threshold:
+                    self.state = "open"
+                    logger.warning("[CircuitBreaker] Provider OPENED after %d failures", self.failures)
 
     async def can_attempt(self) -> bool:
         async with self._lock:
