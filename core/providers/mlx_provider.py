@@ -1,100 +1,68 @@
-"""MLX local provider — Apple Silicon only."""
-from __future__ import annotations
-import asyncio
-import gc
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: core/providers/mlx_provider.py                          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   MLX Provider — local Apple Silicon MLX model integration for Surge.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
+"""
+Surge — MLX Provider
+
+Local MLX model integration for Apple Silicon.
+"""
+
 import logging
-import re
+from pathlib import Path
+from core.providers.base import BaseProvider
 
-from .base import BaseProvider, CallResult
-
-logger = logging.getLogger(__name__)
-
-
-def _strip_think(text: str) -> str:
-    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+logger = logging.getLogger("surge.providers.mlx")
 
 
 class MLXProvider(BaseProvider):
-    name = "mlx"
+    """
+    Local MLX provider for Surge (Apple Silicon).
 
-    def __init__(self, enabled: bool = True):
-        self._enabled = enabled
-        self._model = None
-        self._tokenizer = None
-        self._current_path: str = ""
+    Usage:
+        provider = MLXProvider(config)
+        result = provider.generate("Write code...")
+    """
 
-    def is_available(self) -> bool:
-        if not self._enabled:
-            return False
+    def __init__(self, config):
+        super().__init__(config)
+        self.model_path = config.get("path", "")
+        self.model = None
+        self.tokenizer = None
+
+    def _load(self):
+        """Lazy-load the model."""
+        if self.model is None:
+            from mlx_lm import load
+            if Path(self.model_path).exists():
+                self.model, self.tokenizer = load(self.model_path)
+            else:
+                raise FileNotFoundError(f"Model not found: {self.model_path}")
+
+    def generate(self, prompt: str, max_tokens: int = 4096) -> str:
+        """Generate using local MLX model."""
         try:
-            import mlx.core
-            return True
-        except ImportError:
-            return False
+            self._load()
+            from mlx_lm import generate
+            return generate(self.model, self.tokenizer, prompt=prompt,
+                          max_tokens=max_tokens, temp=0.0)
+        except Exception as e:
+            logger.error("MLX generation failed: %s", e)
+            return f"[MLX Error: {e}]"
 
-    def _load(self, model_path: str) -> None:
-        if self._current_path == model_path and self._model is not None:
-            return
-
-        if self._model is not None:
-            del self._model
-            del self._tokenizer
-            self._model = None
-            self._tokenizer = None
-            gc.collect()
-            try:
-                import mlx.core as mx
-                mx.metal.clear_cache()
-            except Exception:
-                pass
-
-        from mlx_lm import load
-        self._model, self._tokenizer = load(model_path)
-        self._current_path = model_path
-
-    def _sync_call(
-        self, prompt: str, system: str, max_tokens: int, temperature: float, model_path: str
-    ) -> CallResult:
-        from mlx_lm import generate
-
-        self._load(model_path)
-
-        if (
-            hasattr(self._tokenizer, "apply_chat_template")
-            and self._tokenizer.chat_template
-        ):
-            messages = []
-            if system:
-                messages.append({"role": "system", "content": system})
-            messages.append({"role": "user", "content": prompt})
-            formatted = self._tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-        else:
-            formatted = f"System: {system}\n\nUser: {prompt}\n\nAssistant:" if system else f"User: {prompt}\n\nAssistant:"
-
-        output = generate(
-            self._model,
-            self._tokenizer,
-            prompt=formatted,
-            max_tokens=max_tokens,
-            temp=temperature,
-            verbose=False,
-        )
-
-        return CallResult(
-            text=_strip_think(output),
-            provider=self.name,
-            model=model_path,
-        )
-
-    async def call(
-        self, prompt: str, system: str, max_tokens: int, temperature: float, model: str
-    ) -> CallResult:
-        if not self.is_available():
-            raise RuntimeError("MLX not available (install mlx and mlx-lm, requires Apple Silicon).")
-
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, self._sync_call, prompt, system, max_tokens, temperature, model
-        )
+    def health_check(self) -> bool:
+        """Check if MLX model is available."""
+        return Path(self.model_path).exists()

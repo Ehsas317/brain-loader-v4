@@ -1,60 +1,65 @@
-"""Google Gemini provider."""
-from __future__ import annotations
+#!/usr/bin/env python3
+#
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  SURGE  — FILE: core/providers/gemini_provider.py                       ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# PROJECT:    Surge (formerly Brain Loader v4)
+# REPO:       https://github.com/Ehsas317/surge
+# WHAT:       Wave-based parallel dispatch across multiple backends.
+#             A surge is simultaneous and forceful.
+#
+# THIS FILE:
+#   Google Gemini Provider — Gemini API integration for Surge.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+#
+
+"""
+Surge — Gemini Provider
+
+Google Gemini API integration.
+"""
+
 import logging
+import httpx
+from core.providers.base import BaseProvider
 
-import aiohttp
-
-from .base import BaseProvider, CallResult
-
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("surge.providers.gemini")
 
 
 class GeminiProvider(BaseProvider):
-    name = "google"
+    """
+    Google Gemini provider for Surge.
 
-    def __init__(self, api_key: str, base_url: str = "https://generativelanguage.googleapis.com/v1beta"):
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+    Usage:
+        provider = GeminiProvider(config)
+        result = provider.generate("Write code...")
+    """
 
-    def is_available(self) -> bool:
-        return bool(self.api_key)
+    def generate(self, prompt: str, max_tokens: int = 4096) -> str:
+        """Generate using Gemini API."""
+        try:
+            url = f"{self.endpoint}/models/{self.model}:generateContent"
+            params = {"key": self.api_key}
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": max_tokens},
+            }
+            resp = httpx.post(url, params=params, json=payload, timeout=60.0)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            logger.error("Gemini generation failed: %s", e)
+            return f"[Gemini Error: {e}]"
 
-    async def call(
-        self, prompt: str, system: str, max_tokens: int, temperature: float, model: str
-    ) -> CallResult:
-        url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
-
-        contents = [{"role": "user", "parts": [{"text": prompt}]}]
-        if system:
-            contents.insert(0, {"role": "user", "parts": [{"text": f"System: {system}"}]})
-
-        payload = {
-            "contents": contents,
-            "generationConfig": {
-                "maxOutputTokens": max_tokens,
-                "temperature": temperature,
-            },
-        }
-
-        timeout = aiohttp.ClientTimeout(total=120)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, json=payload) as response:
-                response.raise_for_status()
-                data = await response.json()
-
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        usage = data.get("usageMetadata", {})
-        input_tokens = usage.get("promptTokenCount", 0)
-        output_tokens = usage.get("candidatesTokenCount", 0)
-
-        # Gemini pricing (varies by model)
-        cost = (input_tokens / 1_000_000) * 1.25 + (output_tokens / 1_000_000) * 10.00
-
-        return CallResult(
-            text=text,
-            provider=self.name,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost,
-        )
+    def health_check(self) -> bool:
+        """Check Gemini API availability."""
+        try:
+            url = f"{self.endpoint}/models"
+            params = {"key": self.api_key}
+            resp = httpx.get(url, params=params, timeout=10.0)
+            return resp.status_code == 200
+        except Exception:
+            return False
