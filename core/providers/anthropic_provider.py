@@ -62,10 +62,15 @@ class AnthropicProvider(BaseProvider):
         }
         # Default to sonnet pricing if unknown
         model_key = model
-        if model.startswith("claude-"):
+        # FIX BUG-V4-002: Handle model names without dashes (e.g. just "claude")
+        # and custom model names safely without IndexError.
+        if model.startswith("claude-") and "-" in model:
             parts = model.split("-")
             # e.g. "claude-3-5-sonnet-20241022" -> "claude-3-5-sonnet"
             if len(parts) >= 4:
                 model_key = "-".join(parts[:4])
+        elif "-" not in model:
+            # Unknown/custom model name without expected format — use default pricing
+            model_key = "claude-3-5-sonnet"
         input_rate, output_rate = pricing.get(model_key, (3.00, 15.00))
         return (input_tokens / 1_000_000) * input_rate + (output_tokens / 1_000_000) * output_rate
