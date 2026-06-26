@@ -1,4 +1,4 @@
-# Surge (formerly Brain Loader v4)
+# Brain Loader v4
 
 Surge is the fourth iteration of the AI Build Engine. It introduces wave-based parallel dispatch across multiple LLM backends. A surge is simultaneous and forceful — tasks are distributed across all available providers at once, with results integrated automatically.
 
